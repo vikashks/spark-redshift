@@ -56,7 +56,32 @@ private[redshift] object Utils {
    * for data loads. This function converts the URL back to the s3:// format.
    */
   def fixS3Url(url: String): String = {
-    url.replaceAll("s3[an]://", "s3://")
+    var fixUrl = url
+    fixUrl = url.replaceAll("s3[an]://", "s3://")
+
+    // handle case where older aws libraries do not handle hostnames without endpoint
+    try {
+      // try to instantiate AmazonS3URI with url
+      new AmazonS3URI(url)
+    } catch {
+      case e: java.lang.IllegalArgumentException => {
+        if (e.getMessage().
+          startsWith("Invalid S3 URI: hostname does not appear to be a valid S3 endpoint")) {
+          // add endpoint to hostname
+          val uri = new URI(fixUrl)
+          val host = uri.getHost()
+          val fixHost = host + ".s3.amazonaws.com"
+          fixUrl = new URI(uri.getScheme(),
+            uri.getUserInfo(),
+            fixHost,
+            uri.getPort(),
+            uri.getPath(),
+            uri.getQuery(),
+            uri.getFragment()).toString
+        }
+      }
+    }
+    fixUrl
   }
 
   /**

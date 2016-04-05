@@ -40,8 +40,8 @@ class UtilsSuite extends FunSuite with Matchers {
   }
 
   test("fixUrl produces Redshift-compatible equivalents") {
-    Utils.fixS3Url("s3a://foo/bar/12345") shouldBe "s3://foo/bar/12345"
-    Utils.fixS3Url("s3n://foo/bar/baz") shouldBe "s3://foo/bar/baz"
+    Utils.fixS3Url("s3a://foo/bar/12345") shouldBe "s3://foo.s3.amazonaws.com/bar/12345"
+    Utils.fixS3Url("s3n://foo/bar/baz") shouldBe "s3://foo.s3.amazonaws.com/bar/baz"
   }
 
   test("temp paths are random subdirectories of root") {
