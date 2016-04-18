@@ -56,6 +56,14 @@ private[redshift] object Utils {
    * for data loads. This function converts the URL back to the s3:// format.
    */
   def fixS3Url(url: String): String = {
+    url.replaceAll("s3[an]://", "s3://")
+  }
+
+  /**
+   * Since older AWS Java Libraries do not handle S3 urls that have just the bucket name
+   * as the host, add the endpoint to the host
+   */
+  def addEndpointToUrl(url: String): String = {
     var fixUrl = url
     fixUrl = url.replaceAll("s3[an]://", "s3://")
 
