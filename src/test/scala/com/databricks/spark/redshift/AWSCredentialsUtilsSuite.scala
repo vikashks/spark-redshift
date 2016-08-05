@@ -16,8 +16,6 @@
 
 package com.databricks.spark.redshift
 
-import com.amazonaws.services.s3.AmazonS3URI
-
 import scala.language.implicitConversions
 
 import com.amazonaws.AmazonClientException

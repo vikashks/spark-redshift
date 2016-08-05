@@ -60,36 +60,37 @@ private[redshift] object Utils {
   }
 
   /**
-   * Since older AWS Java Libraries do not handle S3 urls that have just the bucket name
-   * as the host, add the endpoint to the host
+   * Factory method to create new S3URI in order to handle various library incompatabilities with older AWS Java Libraries
    */
-  def addEndpointToUrl(url: String): String = {
-    var fixUrl = url
-    fixUrl = url.replaceAll("s3[an]://", "s3://")
-
-    // handle case where older aws libraries do not handle hostnames without endpoint
+  def createS3URI(url: String): AmazonS3URI = {
     try {
       // try to instantiate AmazonS3URI with url
       new AmazonS3URI(url)
     } catch {
       case e: java.lang.IllegalArgumentException => {
-        if (e.getMessage().
-          startsWith("Invalid S3 URI: hostname does not appear to be a valid S3 endpoint")) {
-          // add endpoint to hostname
-          val uri = new URI(fixUrl)
-          val host = uri.getHost()
-          val fixHost = host + ".s3.amazonaws.com"
-          fixUrl = new URI(uri.getScheme(),
-            uri.getUserInfo(),
-            fixHost,
-            uri.getPort(),
-            uri.getPath(),
-            uri.getQuery(),
-            uri.getFragment()).toString
+        if (e.getMessage().startsWith("Invalid S3 URI: hostname does not appear to be a valid S3 endpoint")) {
+          new AmazonS3URI(addEndpointToUrl(url))
+        } else {
+          throw e
         }
       }
     }
-    fixUrl
+  }
+
+  /**
+   * Since older AWS Java Libraries do not handle S3 urls that have just the bucket name
+   * as the host, add the endpoint to the host
+   */
+  def addEndpointToUrl(url: String, domain: String = "s3.amazonaws.com"): String = {
+    val uri = new URI(url)
+    val hostWithEndpoint = uri.getHost() + "." + domain
+    new URI(uri.getScheme(),
+      uri.getUserInfo(),
+      hostWithEndpoint,
+      uri.getPort(),
+      uri.getPath(),
+      uri.getQuery(),
+      uri.getFragment()).toString
   }
 
   /**

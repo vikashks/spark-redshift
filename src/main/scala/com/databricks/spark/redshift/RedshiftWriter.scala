@@ -23,7 +23,6 @@ import java.sql.{Connection, Date, SQLException, Timestamp}
 import com.amazonaws.auth.AWSCredentials
 import com.eclipsesource.json.Json
 import com.amazonaws.services.s3.AmazonS3Client
-import com.amazonaws.services.s3.AmazonS3URI
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.TaskContext
@@ -159,7 +158,7 @@ private[redshift] class RedshiftWriter(
       // Read the MANIFEST file to get the list of S3 part files that were written by Redshift.
       // And load each entry individually
       log.warn("Using manifest url: " + manifestUrl)
-      val s3URI = new AmazonS3URI(Utils.addEndpointToUrl(manifestUrl))
+      val s3URI = Utils.createS3URI(manifestUrl)
       val s3Client = s3ClientFactory(creds)
       val is = s3Client.getObject(s3URI.getBucket, s3URI.getKey).getObjectContent
 
