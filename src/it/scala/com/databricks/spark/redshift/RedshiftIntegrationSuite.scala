@@ -186,6 +186,19 @@ class RedshiftIntegrationSuite extends IntegrationSuiteBase {
     )
   }
 
+  test("backslashes in queries/subqueries are escaped (regression test for #215)") {
+    val loadedDf = sqlContext.read
+      .format("com.databricks.spark.redshift")
+      .option("url", jdbcUrl)
+      .option("query", s"select replace(teststring, '\\\\', '') as col from $test_table")
+      .option("tempdir", tempDir)
+      .load()
+    checkAnswer(
+      loadedDf.filter("col = 'asdf'"),
+      Seq(Row("asdf"))
+    )
+  }
+
   test("Can load output when 'dbtable' is a subquery wrapped in parentheses") {
     // scalastyle:off
     val query =
@@ -272,8 +285,8 @@ class RedshiftIntegrationSuite extends IntegrationSuiteBase {
     assume(org.apache.spark.SPARK_VERSION.take(3) >= "1.6")
     val df = sqlContext.sql("select testbool from test_table where testbool = true")
     val physicalPlan = df.queryExecution.sparkPlan
-    physicalPlan.collectFirst { case f: execution.Filter => f }.foreach { filter =>
-      fail(s"Filter should have been eliminated; plan is:\n$physicalPlan")
+    physicalPlan.collectFirst { case f: execution.FilterExec => f }.foreach { filter =>
+      fail(s"Filter should have been eliminated:\n${df.queryExecution}")
     }
   }
 
@@ -342,7 +355,7 @@ class RedshiftIntegrationSuite extends IntegrationSuiteBase {
     // .rdd() forces the first query to be unloaded from Redshift
     val rdd1 = sqlContext.sql("select testint from test_table").rdd
     // Similarly, this also forces an unload:
-    val rdd2 = sqlContext.sql("select testdouble from test_table").rdd
+    sqlContext.sql("select testdouble from test_table").rdd
     // If the unloads were performed into the same directory then this call would fail: the
     // second unload from rdd2 would have overwritten the integers with doubles, so we'd get
     // a NumberFormatException.
@@ -380,6 +393,90 @@ class RedshiftIntegrationSuite extends IntegrationSuiteBase {
           .mode(SaveMode.Append)
           .save()
       }
+    } finally {
+      conn.prepareStatement(s"drop table if exists $tableName").executeUpdate()
+      conn.commit()
+    }
+  }
+
+  test("configuring compression on columns") {
+    val tableName = s"configuring_compression_on_columns_$randomSuffix"
+    try {
+      val metadata = new MetadataBuilder().putString("encoding", "LZO").build()
+      val schema = StructType(
+        StructField("x", StringType, metadata = metadata) :: Nil)
+      sqlContext.createDataFrame(sc.parallelize(Seq(Row("a" * 128))), schema).write
+        .format("com.databricks.spark.redshift")
+        .option("url", jdbcUrl)
+        .option("dbtable", tableName)
+        .option("tempdir", tempDir)
+        .mode(SaveMode.ErrorIfExists)
+        .save()
+      assert(DefaultJDBCWrapper.tableExists(conn, tableName))
+      val loadedDf = sqlContext.read
+        .format("com.databricks.spark.redshift")
+        .option("url", jdbcUrl)
+        .option("dbtable", tableName)
+        .option("tempdir", tempDir)
+        .load()
+      checkAnswer(loadedDf, Seq(Row("a" * 128)))
+      val encodingDF = sqlContext.read
+        .format("jdbc")
+        .option("url", jdbcUrl)
+        .option("dbtable",
+          s"""(SELECT "column", lower(encoding) FROM pg_table_def WHERE tablename='$tableName')""")
+        .load()
+      checkAnswer(encodingDF, Seq(Row("x", "lzo")))
+    } finally {
+      conn.prepareStatement(s"drop table if exists $tableName").executeUpdate()
+      conn.commit()
+    }
+  }
+
+  test("configuring comments on columns") {
+    val tableName = s"configuring_comments_on_columns_$randomSuffix"
+    try {
+      val metadata = new MetadataBuilder().putString("description", "Hello Column").build()
+      val schema = StructType(
+        StructField("x", StringType, metadata = metadata) :: Nil)
+      sqlContext.createDataFrame(sc.parallelize(Seq(Row("a" * 128))), schema).write
+        .format("com.databricks.spark.redshift")
+        .option("url", jdbcUrl)
+        .option("dbtable", tableName)
+        .option("description", "Hello Table")
+        .option("tempdir", tempDir)
+        .mode(SaveMode.ErrorIfExists)
+        .save()
+      assert(DefaultJDBCWrapper.tableExists(conn, tableName))
+      val loadedDf = sqlContext.read
+        .format("com.databricks.spark.redshift")
+        .option("url", jdbcUrl)
+        .option("dbtable", tableName)
+        .option("tempdir", tempDir)
+        .load()
+      checkAnswer(loadedDf, Seq(Row("a" * 128)))
+      val tableDF = sqlContext.read
+        .format("jdbc")
+        .option("url", jdbcUrl)
+        .option("dbtable", s"(SELECT pg_catalog.obj_description('$tableName'::regclass))")
+        .load()
+      checkAnswer(tableDF, Seq(Row("Hello Table")))
+      val commentQuery =
+        s"""
+           |(SELECT c.column_name, pgd.description
+           |FROM pg_catalog.pg_statio_all_tables st
+           |INNER JOIN pg_catalog.pg_description pgd
+           |   ON (pgd.objoid=st.relid)
+           |INNER JOIN information_schema.columns c
+           |   ON (pgd.objsubid=c.ordinal_position AND c.table_name=st.relname)
+           |WHERE c.table_name='$tableName')
+         """.stripMargin
+      val columnDF = sqlContext.read
+        .format("jdbc")
+        .option("url", jdbcUrl)
+        .option("dbtable", commentQuery)
+        .load()
+      checkAnswer(columnDF, Seq(Row("x", "Hello Column")))
     } finally {
       conn.prepareStatement(s"drop table if exists $tableName").executeUpdate()
       conn.commit()
@@ -502,9 +599,9 @@ class RedshiftIntegrationSuite extends IntegrationSuiteBase {
   }
 
   test("Respect SaveMode.ErrorIfExists when table exists") {
-    val rdd = sc.parallelize(TestUtils.expectedData.toSeq)
+    val rdd = sc.parallelize(TestUtils.expectedData)
     val df = sqlContext.createDataFrame(rdd, TestUtils.testSchema)
-    df.registerTempTable(test_table) // to ensure that the table already exists
+    df.createOrReplaceTempView(test_table) // to ensure that the table already exists
 
     // Check that SaveMode.ErrorIfExists throws an exception
     intercept[AnalysisException] {
@@ -555,5 +652,18 @@ class RedshiftIntegrationSuite extends IntegrationSuiteBase {
     // constant-folding, whereas earlier Spark versions would preserve the cast which prevented
     // filter pushdown.
     checkAnswer(df.filter("testtimestamp = '2015-07-01 00:00:00.001'"), Seq(Row(timestamp)))
+  }
+
+  test("full timestamp precision is preserved in loads (regression test for #214)") {
+    val timestamps = Seq(
+      TestUtils.toTimestamp(1970, 0, 1, 0, 0, 0, millis = 1),
+      TestUtils.toTimestamp(1970, 0, 1, 0, 0, 0, millis = 10),
+      TestUtils.toTimestamp(1970, 0, 1, 0, 0, 0, millis = 100),
+      TestUtils.toTimestamp(1970, 0, 1, 0, 0, 0, millis = 1000))
+    testRoundtripSaveAndLoad(
+      s"full_timestamp_precision_is_preserved$randomSuffix",
+      sqlContext.createDataFrame(sc.parallelize(timestamps.map(Row(_))),
+        StructType(StructField("ts", TimestampType) :: Nil))
+    )
   }
 }

@@ -28,6 +28,7 @@ import scala.concurrent.duration.Duration
 import scala.util.Try
 
 import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.execution.datasources.jdbc.DriverRegistry
 import org.apache.spark.sql.types._
 import org.slf4j.LoggerFactory
 
@@ -85,28 +86,6 @@ private[redshift] class JDBCWrapper {
         case "postgresql" => "org.postgresql.Driver"
         case other => throw new IllegalArgumentException(s"Unsupported JDBC protocol: '$other'")
       }
-    }
-  }
-
-  /**
-   * Reflectively calls Spark's `DriverRegistry.register()`, which handles corner-cases related to
-   * using JDBC drivers that are not accessible from the bootstrap classloader.
-   */
-  private def registerDriver(driverClass: String): Unit = {
-    // DriverRegistry.register() is one of the few pieces of private Spark functionality which
-    // we need to rely on. This class was relocated in Spark 1.5.0, so we need to use reflection
-    // in order to support both Spark 1.4.x and 1.5.x.
-    if (SPARK_VERSION.startsWith("1.4")) {
-      val className = "org.apache.spark.sql.jdbc.package$DriverRegistry$"
-      val driverRegistryClass = Utils.classForName(className)
-      val registerMethod = driverRegistryClass.getDeclaredMethod("register", classOf[String])
-      val companionObject = driverRegistryClass.getDeclaredField("MODULE$").get(null)
-      registerMethod.invoke(companionObject, driverClass)
-    } else { // Spark 1.5.0+
-      val className = "org.apache.spark.sql.execution.datasources.jdbc.DriverRegistry"
-      val driverRegistryClass = Utils.classForName(className)
-      val registerMethod = driverRegistryClass.getDeclaredMethod("register", classOf[String])
-      registerMethod.invoke(null, driverClass)
     }
   }
 
@@ -174,7 +153,6 @@ private[redshift] class JDBCWrapper {
       while (i < ncols) {
         val columnName = rsmd.getColumnLabel(i + 1)
         val dataType = rsmd.getColumnType(i + 1)
-        val typeName = rsmd.getColumnTypeName(i + 1)
         val fieldSize = rsmd.getPrecision(i + 1)
         val fieldScale = rsmd.getScale(i + 1)
         val isSigned = rsmd.isSigned(i + 1)
@@ -203,7 +181,7 @@ private[redshift] class JDBCWrapper {
       credentials: Option[(String, String)]) : Connection = {
     val subprotocol = url.stripPrefix("jdbc:").split(":")(0)
     val driverClass: String = getDriverClass(subprotocol, userProvidedDriverClass)
-    registerDriver(driverClass)
+    DriverRegistry.register(driverClass)
     val driverWrapperClass: Class[_] = if (SPARK_VERSION.startsWith("1.4")) {
       Utils.classForName("org.apache.spark.sql.jdbc.package$DriverWrapper")
     } else { // Spark 1.5.0+
@@ -226,10 +204,9 @@ private[redshift] class JDBCWrapper {
       throw new IllegalArgumentException(s"Did not find registered driver with class $driverClass")
     }
     val properties = new Properties()
-    credentials.foreach { case(user, password) => {
-        properties.setProperty("user", user)
-        properties.setProperty("password", password)
-      }
+    credentials.foreach { case(user, password) =>
+      properties.setProperty("user", user)
+      properties.setProperty("password", password)
     }
     driver.connect(url, properties)
   }
@@ -241,28 +218,37 @@ private[redshift] class JDBCWrapper {
     val sb = new StringBuilder()
     schema.fields.foreach { field => {
       val name = field.name
-      val typ: String = field.dataType match {
-        case IntegerType => "INTEGER"
-        case LongType => "BIGINT"
-        case DoubleType => "DOUBLE PRECISION"
-        case FloatType => "REAL"
-        case ShortType => "INTEGER"
-        case ByteType => "SMALLINT" // Redshift does not support the BYTE type.
-        case BooleanType => "BOOLEAN"
-        case StringType =>
-          if (field.metadata.contains("maxlength")) {
-            s"VARCHAR(${field.metadata.getLong("maxlength")})"
-          } else {
-            "TEXT"
-          }
-        case BinaryType => "BLOB"
-        case TimestampType => "TIMESTAMP"
-        case DateType => "DATE"
-        case t: DecimalType => s"DECIMAL(${t.precision},${t.scale})"
-        case _ => throw new IllegalArgumentException(s"Don't know how to save $field to JDBC")
+      val typ: String = if (field.metadata.contains("redshift_type")) {
+        field.metadata.getString("redshift_type")
+      } else {
+        field.dataType match {
+          case IntegerType => "INTEGER"
+          case LongType => "BIGINT"
+          case DoubleType => "DOUBLE PRECISION"
+          case FloatType => "REAL"
+          case ShortType => "INTEGER"
+          case ByteType => "SMALLINT" // Redshift does not support the BYTE type.
+          case BooleanType => "BOOLEAN"
+          case StringType =>
+            if (field.metadata.contains("maxlength")) {
+              s"VARCHAR(${field.metadata.getLong("maxlength")})"
+            } else {
+              "TEXT"
+            }
+          case TimestampType => "TIMESTAMP"
+          case DateType => "DATE"
+          case t: DecimalType => s"DECIMAL(${t.precision},${t.scale})"
+          case _ => throw new IllegalArgumentException(s"Don't know how to save $field to JDBC")
+        }
       }
+
       val nullable = if (field.nullable) "" else "NOT NULL"
-      sb.append(s""", "${name.replace("\"", "\\\"")}" $typ $nullable""".trim)
+      val encoding = if (field.metadata.contains("encoding")) {
+        s"ENCODE ${field.metadata.getString("encoding")}"
+      } else {
+        ""
+      }
+      sb.append(s""", "${name.replace("\"", "\\\"")}" $typ $nullable $encoding""".trim)
     }}
     if (sb.length < 2) "" else sb.substring(2)
   }

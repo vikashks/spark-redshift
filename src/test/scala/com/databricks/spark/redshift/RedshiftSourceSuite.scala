@@ -183,10 +183,10 @@ class RedshiftSourceSuite
         |UNLOAD \('SELECT "testbyte", "testbool" FROM
         |  \(select testbyte, testbool
         |    from test_table
-        |    where teststring = \\'Unicode\\'\\'s樂趣\\'\) '\)
+        |    where teststring = \\'\\\\\\\\Unicode\\'\\'s樂趣\\'\) '\)
       """.stripMargin.lines.map(_.trim).mkString(" ").trim.r
     val query =
-      """select testbyte, testbool from test_table where teststring = 'Unicode''s樂趣'"""
+      """select testbyte, testbool from test_table where teststring = '\\Unicode''s樂趣'"""
     // scalastyle:on
     val querySchema =
       StructType(Seq(StructField("testbyte", ByteType), StructField("testbool", BooleanType)))
@@ -298,20 +298,12 @@ class RedshiftSourceSuite
       "usestagingtable" -> "true")
 
     val expectedCommands = Seq(
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging_.*\"".r,
-      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table_staging_.*\"".r,
-      "DELETE FROM \"PUBLIC\".\"test_table_staging_.*\" WHERE id < 100".r,
-      "DELETE FROM \"PUBLIC\".\"test_table_staging_.*\" WHERE id > 100".r,
-      "DELETE FROM \"PUBLIC\".\"test_table_staging_.*\" WHERE id = -1".r,
-      "COPY \"PUBLIC\".\"test_table_staging_.*\"".r,
-      """
-        | BEGIN;
-        | ALTER TABLE "PUBLIC"\."test_table" RENAME TO "test_table_backup_.*";
-        | ALTER TABLE "PUBLIC"\."test_table_staging_.*" RENAME TO "test_table";
-        | DROP TABLE "PUBLIC"\."test_table_backup_.*";
-        | END;
-      """.stripMargin.trim.r,
-      "DROP TABLE IF EXISTS \"PUBLIC\"\\.\"test_table_staging_.*\"".r)
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id < 100".r,
+      "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id > 100".r,
+      "DELETE FROM \"PUBLIC\".\"test_table.*\" WHERE id = -1".r,
+      "COPY \"PUBLIC\".\"test_table.*\"".r)
 
     source.createRelation(testSqlContext, SaveMode.Overwrite, params, expectedDataDF)
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
@@ -325,19 +317,11 @@ class RedshiftSourceSuite
       "distkey" -> "testint")
 
     val expectedCommands = Seq(
-      "DROP TABLE IF EXISTS \"PUBLIC\"\\.\"test_table_staging_.*\"".r,
-      ("CREATE TABLE IF NOT EXISTS \"PUBLIC\"\\.\"test_table_staging.*" +
+      "DROP TABLE IF EXISTS \"PUBLIC\"\\.\"test_table.*\"".r,
+      ("CREATE TABLE IF NOT EXISTS \"PUBLIC\"\\.\"test_table.*" +
         " DISTSTYLE KEY DISTKEY \\(testint\\).*").r,
-      "COPY \"PUBLIC\"\\.\"test_table_staging_.*\"".r,
-      "GRANT SELECT ON \"PUBLIC\"\\.\"test_table_staging.+\" TO jeremy".r,
-      """
-        | BEGIN;
-        | ALTER TABLE "PUBLIC"\."test_table" RENAME TO "test_table_backup_.*";
-        | ALTER TABLE "PUBLIC"\."test_table_staging_.*" RENAME TO "test_table";
-        | DROP TABLE "PUBLIC"\."test_table_backup_.*";
-        | END;
-      """.stripMargin.trim.r,
-      "DROP TABLE IF EXISTS \"PUBLIC\"\\.\"test_table_staging_.*\"".r)
+      "COPY \"PUBLIC\"\\.\"test_table.*\"".r,
+      "GRANT SELECT ON \"PUBLIC\"\\.\"test_table\" TO jeremy".r)
 
     val mockRedshift = new MockRedshift(
       defaultParams("url"),
@@ -375,6 +359,8 @@ class RedshiftSourceSuite
         testSqlContext, df, SaveMode.Append, Parameters.mergeParameters(defaultParams))
     }
     mockRedshift.verifyThatConnectionsWereClosed()
+    mockRedshift.verifyThatCommitWasNotCalled()
+    mockRedshift.verifyThatRollbackWasCalled()
     mockRedshift.verifyThatExpectedQueriesWereIssued(Seq.empty)
   }
 
@@ -384,23 +370,22 @@ class RedshiftSourceSuite
     val mockRedshift = new MockRedshift(
       defaultParams("url"),
       Map(TableName.parseFromEscaped("test_table").toString -> TestUtils.testSchema),
-      jdbcQueriesThatShouldFail = Seq("COPY \"PUBLIC\".\"test_table_staging_.*\"".r))
+      jdbcQueriesThatShouldFail = Seq("COPY \"PUBLIC\".\"test_table.*\"".r))
 
     val expectedCommands = Seq(
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging_.*\"".r,
-      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table_staging_.*\"".r,
-      "COPY \"PUBLIC\".\"test_table_staging_.*\"".r,
-      ".*FROM stl_load_errors.*".r,
-      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table_staging_.*\"".r
+      "DROP TABLE IF EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "CREATE TABLE IF NOT EXISTS \"PUBLIC\".\"test_table.*\"".r,
+      "COPY \"PUBLIC\".\"test_table.*\"".r,
+      ".*FROM stl_load_errors.*".r
     )
 
     val source = new DefaultSource(mockRedshift.jdbcWrapper, _ => mockS3Client)
     intercept[Exception] {
       source.createRelation(testSqlContext, SaveMode.Overwrite, params, expectedDataDF)
-      mockRedshift.verifyThatConnectionsWereClosed()
-      mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
     }
     mockRedshift.verifyThatConnectionsWereClosed()
+    mockRedshift.verifyThatCommitWasNotCalled()
+    mockRedshift.verifyThatRollbackWasCalled()
     mockRedshift.verifyThatExpectedQueriesWereIssued(expectedCommands)
   }
 
@@ -414,8 +399,7 @@ class RedshiftSourceSuite
       Map(TableName.parseFromEscaped(defaultParams("dbtable")).toString -> null))
 
     val source = new DefaultSource(mockRedshift.jdbcWrapper, _ => mockS3Client)
-    val savedDf =
-      source.createRelation(testSqlContext, SaveMode.Append, defaultParams, expectedDataDF)
+    source.createRelation(testSqlContext, SaveMode.Append, defaultParams, expectedDataDF)
 
     // This test is "appending" to an empty table, so we expect all our test data to be
     // the only content in the returned data frame.
@@ -443,6 +427,60 @@ class RedshiftSourceSuite
     val expectedCreateTableCommand =
       """CREATE TABLE IF NOT EXISTS "PUBLIC"."test_table" ("long_str" VARCHAR(512),""" +
         """ "short_str" VARCHAR(10), "default_str" TEXT)"""
+    assert(createTableCommand === expectedCreateTableCommand)
+  }
+
+  test("configuring encoding on columns") {
+    val lzoMetadata = new MetadataBuilder().putString("encoding", "LZO").build()
+    val runlengthMetadata = new MetadataBuilder().putString("encoding", "RUNLENGTH").build()
+    val schema = StructType(
+      StructField("lzo_str", StringType, metadata = lzoMetadata) ::
+        StructField("runlength_str", StringType, metadata = runlengthMetadata) ::
+        StructField("default_str", StringType) ::
+        Nil)
+    val df = testSqlContext.createDataFrame(sc.emptyRDD[Row], schema)
+    val createTableCommand =
+      DefaultRedshiftWriter.createTableSql(df, MergedParameters.apply(defaultParams)).trim
+    val expectedCreateTableCommand =
+      """CREATE TABLE IF NOT EXISTS "PUBLIC"."test_table" ("lzo_str" TEXT  ENCODE LZO,""" +
+    """ "runlength_str" TEXT  ENCODE RUNLENGTH, "default_str" TEXT)"""
+    assert(createTableCommand === expectedCreateTableCommand)
+  }
+
+  test("configuring descriptions on columns") {
+    val descriptionMetadata1 = new MetadataBuilder().putString("description", "Test1").build()
+    val descriptionMetadata2 = new MetadataBuilder().putString("description", "Test'2").build()
+    val schema = StructType(
+      StructField("first_str", StringType, metadata = descriptionMetadata1) ::
+        StructField("second_str", StringType, metadata = descriptionMetadata2) ::
+        StructField("default_str", StringType) ::
+        Nil)
+    val df = testSqlContext.createDataFrame(sc.emptyRDD[Row], schema)
+    val commentCommands =
+      DefaultRedshiftWriter.commentActions(Some("Test"), schema)
+    val expectedCommentCommands = List(
+      "COMMENT ON TABLE %s IS 'Test'",
+      "COMMENT ON COLUMN %s.\"first_str\" IS 'Test1'",
+      "COMMENT ON COLUMN %s.\"second_str\" IS 'Test''2'")
+    assert(commentCommands === expectedCommentCommands)
+  }
+
+  test("configuring redshift_type on columns") {
+    val bpcharMetadata = new MetadataBuilder().putString("redshift_type", "BPCHAR(2)").build()
+    val nvarcharMetadata = new MetadataBuilder().putString("redshift_type", "NVARCHAR(123)").build()
+
+    val schema = StructType(
+      StructField("bpchar_str", StringType, metadata = bpcharMetadata) ::
+      StructField("bpchar_str", StringType, metadata = nvarcharMetadata) ::
+      StructField("default_str", StringType) ::
+      Nil)
+
+    val df = testSqlContext.createDataFrame(sc.emptyRDD[Row], schema)
+    val createTableCommand =
+      DefaultRedshiftWriter.createTableSql(df, MergedParameters.apply(defaultParams)).trim
+    val expectedCreateTableCommand =
+      """CREATE TABLE IF NOT EXISTS "PUBLIC"."test_table" ("bpchar_str" BPCHAR(2),""" +
+        """ "bpchar_str" NVARCHAR(123), "default_str" TEXT)"""
     assert(createTableCommand === expectedCreateTableCommand)
   }
 
@@ -476,7 +514,7 @@ class RedshiftSourceSuite
       "query" -> "select * from test_table")
 
     val e1 = intercept[IllegalArgumentException] {
-      expectedDataDF.saveAsRedshiftTable(invalidParams)
+      expectedDataDF.write.format("com.databricks.spark.redshift").options(invalidParams).save()
     }
     assert(e1.getMessage.contains("dbtable"))
   }
@@ -485,12 +523,12 @@ class RedshiftSourceSuite
     val invalidParams = Map("dbtable" -> "foo") // missing tempdir and url
 
     val e1 = intercept[IllegalArgumentException] {
-      expectedDataDF.saveAsRedshiftTable(invalidParams)
+      expectedDataDF.write.format("com.databricks.spark.redshift").options(invalidParams).save()
     }
     assert(e1.getMessage.contains("tempdir"))
 
     val e2 = intercept[IllegalArgumentException] {
-      testSqlContext.redshiftTable(invalidParams)
+      expectedDataDF.write.format("com.databricks.spark.redshift").options(invalidParams).save()
     }
     assert(e2.getMessage.contains("tempdir"))
   }
@@ -502,7 +540,11 @@ class RedshiftSourceSuite
   test("Saves throw error message if S3 Block FileSystem would be used") {
     val params = defaultParams + ("tempdir" -> defaultParams("tempdir").replace("s3n", "s3"))
     val e = intercept[IllegalArgumentException] {
-      expectedDataDF.saveAsRedshiftTable(params)
+      expectedDataDF.write
+        .format("com.databricks.spark.redshift")
+        .mode("append")
+        .options(params)
+        .save()
     }
     assert(e.getMessage.contains("Block FileSystem"))
   }

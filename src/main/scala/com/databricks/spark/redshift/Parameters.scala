@@ -148,17 +148,6 @@ private[redshift] object Parameters {
     def jdbcDriver: Option[String] = parameters.get("jdbcdriver")
 
     /**
-     * If true, when writing, replace any existing data. When false, append to the table instead.
-     * Note that the table schema will need to be compatible with whatever you have in the DataFrame
-     * you're writing. spark-redshift makes no attempt to enforce that - you'll just see Redshift
-     * errors if they don't match.
-     *
-     * Defaults to false.
-     */
-    @deprecated("Use SaveMode instead", "0.5.0")
-    def overwrite: Boolean = parameters("overwrite").toBoolean
-
-    /**
      * Set the Redshift table distribution style, which can be one of: EVEN, KEY or ALL. If you set
      * it to KEY, you'll also need to use the distkey parameter to set the distribution key.
      *
@@ -191,6 +180,8 @@ private[redshift] object Parameters {
     def sortKeySpec: Option[String] = parameters.get("sortkeyspec")
 
     /**
+     * DEPRECATED: see PR #157.
+     *
      * When true, data is always loaded into a new temporary table when performing an overwrite.
      * This is to ensure that the whole load process succeeds before dropping any data from
      * Redshift, which can be useful if, in the event of failures, stale data is better than no data
@@ -204,6 +195,11 @@ private[redshift] object Parameters {
      * Extra options to append to the Redshift COPY command (e.g. "MAXERROR 100").
      */
     def extraCopyOptions: String = parameters.get("extracopyoptions").getOrElse("")
+
+    /**
+      * Description of the table, set using the SQL COMMENT command.
+      */
+    def description: Option[String] = parameters.get("description")
 
     /**
       * List of semi-colon separated SQL statements to run before write operations.
@@ -227,6 +223,12 @@ private[redshift] object Parameters {
      * Defaults to empty.
      */
     def postActions: Array[String] = parameters("postactions").split(";")
+
+    /**
+      * The IAM role to assume for Redshift COPY/UNLOAD operations.  This takes precedence over
+      * other forms of authentication.
+      */
+    def iamRole: Option[String] = parameters.get("aws_iam_role")
 
     /**
      * Temporary AWS credentials which are passed to Redshift. These only need to be supplied by
