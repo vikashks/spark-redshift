@@ -173,7 +173,7 @@ private[redshift] class RedshiftWriter(
       s3Files.foreach { entryUrl =>
 
         // Load the temporary data into the new file
-        val copyStatement = copySql(data.sqlContext, params, creds, entryUrl)
+        val copyStatement = copyEntryUrlSql(data.sqlContext, params, creds, entryUrl)
         log.info(copyStatement)
         try {
           jdbcWrapper.executeInterruptibly(conn.prepareStatement(copyStatement))

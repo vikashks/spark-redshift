@@ -124,7 +124,7 @@ private[redshift] case class RedshiftRelation(
       val filesToRead: Seq[String] = {
         val cleanedTempDirUri =
           Utils.fixS3Url(Utils.removeCredentialsFromURI(URI.create(tempDir)).toString)
-        val s3URI = new AmazonS3URI(cleanedTempDirUri)
+        val s3URI = new AmazonS3URI(Utils.addEndpointToUrl(cleanedTempDirUri))
         val s3Client = s3ClientFactory(creds)
         val is = s3Client.getObject(s3URI.getBucket, s3URI.getKey + "manifest").getObjectContent
         val s3Files = try {
