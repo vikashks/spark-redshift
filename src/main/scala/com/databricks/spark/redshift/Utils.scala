@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory
 /**
  * Various arbitrary helper functions
  */
-private[redshift] object Utils {
+object Utils {
 
   private val log = LoggerFactory.getLogger(getClass)
 
