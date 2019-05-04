@@ -70,10 +70,6 @@ class RedshiftFileFormat extends FileFormat {
       options: Map[String, String],
       hadoopConf: Configuration): (PartitionedFile) => Iterator[InternalRow] = {
 
-    require(partitionSchema.isEmpty)
-    require(filters.isEmpty)
-    require(dataSchema == requiredSchema)
-
     val broadcastedConf =
       sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
 
